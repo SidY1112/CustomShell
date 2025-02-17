@@ -1,25 +1,4 @@
 // The MIT License (MIT)
-// 
-// Copyright (c) 2023 Trevor Bakker 
-// 
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-// 
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-// 
-// 
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-// THE SOFTWARE.
 
 #define _GNU_SOURCE
 
@@ -31,89 +10,277 @@
 #include <string.h>
 #include <signal.h>
 
-#define WHITESPACE " \t\n"      // We want to split our command line up into tokens
-                                // so we need to define what delimits our tokens.
-                                // In this case  white space
-                                // will separate the tokens on our command line
 
-#define MAX_COMMAND_SIZE 128    // The maximum command-line size
+#define WHITESPACE " \t\n"      // Token delimiters
+#define MAX_COMMAND_SIZE 128    // Max command size
+#define MAX_HISTORY 50          // Max history size
+#define MAX_NUM_ARGUMENTS 10    // Max arguments
 
-#define MAX_NUM_ARGUMENTS 1     // Mav shell currently only supports one argument
+char *history[MAX_HISTORY];  // Stack for command history
+int top = -1;  // Stack pointer (-1 means empty)
+void push_command(char *command);
+void print_history();
+void handle_signal(int sig);
 
 int main()
 {
+    signal(SIGINT, handle_signal);
+    signal(SIGTSTP, handle_signal);
 
-  char * command_string = (char*) malloc( MAX_COMMAND_SIZE );
+    char *command_string = (char*) malloc(MAX_COMMAND_SIZE);
 
-  while( 1 )
-  {
-    // Print out the msh prompt
-    printf ("msh> ");
-
-    // Read the command from the commandline.  The
-    // maximum command that will be read is MAX_COMMAND_SIZE
-    // This while command will wait here until the user
-    // inputs something since fgets returns NULL when there
-    // is no input
-    while( !fgets (command_string, MAX_COMMAND_SIZE, stdin) );
-
-    /* Parse input */
-    char *token[MAX_NUM_ARGUMENTS];
-
-    for( int i = 0; i < MAX_NUM_ARGUMENTS; i++ )
+    while (1)
     {
-      token[i] = NULL;
+        printf("msh> ");
+        while (!fgets(command_string, MAX_COMMAND_SIZE, stdin));
+
+        if (command_string[0] == '\n' || command_string[0] == '\0') 
+        {
+            continue; 
+        }
+
+        /* Parse input */
+        char *token[MAX_NUM_ARGUMENTS];
+        for (int i = 0; i < MAX_NUM_ARGUMENTS; i++)
+        {
+            token[i] = NULL;
+        }
+
+        int token_count = 0;
+        char *argument_ptr = NULL;
+        char *working_string = strdup(command_string);
+        char *head_ptr = working_string;
+
+        while (((argument_ptr = strsep(&working_string, WHITESPACE)) != NULL) && (token_count < MAX_NUM_ARGUMENTS))
+        {
+            token[token_count] = strndup(argument_ptr, MAX_COMMAND_SIZE);
+            if (strlen(token[token_count]) == 0)
+            {
+                token[token_count] = NULL;
+            }
+            token_count++;
+        }
+
+        if (token[0] == NULL) continue;
+
+        // Handle `!#` history execution
+        if (token[0][0] == '!' && strlen(token[0]) > 1) 
+        {
+            int command_index = atoi(&token[0][1]) - 1;
+            if (command_index >= 0 && command_index <= top) 
+            {
+                printf("Re-running command: %s\n", history[command_index]);
+                strcpy(command_string, history[command_index]);
+
+                // Tokenize the retrieved command
+                char *history_tokens[MAX_NUM_ARGUMENTS];
+                int history_token_count = 0;
+                char *arg_ptr = NULL;
+                char *history_working = strdup(command_string);
+                char *head = history_working;
+
+                while ((arg_ptr = strsep(&history_working, WHITESPACE)) != NULL && history_token_count < MAX_NUM_ARGUMENTS)
+                {
+                    if (strlen(arg_ptr) > 0)
+                    {
+                        history_tokens[history_token_count] = strndup(arg_ptr, MAX_COMMAND_SIZE);
+                        history_token_count++;
+                    }
+                }
+                history_tokens[history_token_count] = NULL;
+
+                // Store in history again
+                push_command(command_string);
+
+                // Execute the command normally
+                if (strcmp(history_tokens[0], "exit") == 0 || strcmp(history_tokens[0], "quit") == 0) 
+                {
+                    free(head);
+                    exit(0);
+                }
+
+                if (strcmp(history_tokens[0], "cd") == 0) 
+                {
+                    if (history_tokens[1] == NULL)
+                        chdir(getenv("HOME"));
+                    else if (chdir(history_tokens[1]) != 0)
+                        perror("cd failed");
+                } 
+                else 
+                {
+                    pid_t pid = fork();
+                    if (pid == 0) 
+                    {
+                        if (execvp(history_tokens[0], history_tokens) == -1)
+                        {
+                            printf("%s: Command not found.\n", history_tokens[0]);
+                            exit(EXIT_FAILURE);
+                        }
+                    } 
+                    else if (pid > 0) 
+                    {
+                        waitpid(pid, NULL, 0);
+                    }
+                    else 
+                    {
+                        perror("fork failed");
+                    }
+                }
+
+                free(head);
+                for (int i = 0; i < history_token_count; i++) 
+                {
+                    free(history_tokens[i]);
+                }
+
+                continue;
+            } 
+            else 
+            {
+                printf("Invalid command number.\n");
+                continue;
+            }
+        }
+
+        // Store command in history
+        push_command(command_string);
+
+        // Handle `exit` or `quit`
+        if (strcmp(token[0], "exit") == 0 || strcmp(token[0], "quit") == 0) 
+        {
+            exit(0);
+        }
+
+        // Handle `history` command
+        if (strcmp(token[0], "history") == 0) 
+        {
+            print_history();
+            continue;
+        }
+
+        // Handle `cd` command
+        if (strcmp(token[0], "cd") == 0) 
+        {
+            if (token[1] == NULL) 
+            {
+                chdir(getenv("HOME"));
+            } 
+            else 
+            {
+                if (chdir(token[1]) != 0) 
+                {
+                    perror("cd failed");
+                }
+            }
+            continue;
+        }
+
+        // Fork and execute commands
+        pid_t pid = fork();
+        if (pid == -1) 
+{
+    perror("fork failed");
+} 
+else if (pid == 0) // Child process
+{
+    int i;
+    
+    // Handle output redirection (`>`)
+    for (i = 0; i < token_count; i++) 
+    {
+        if (token[i] != NULL && strcmp(token[i], ">") == 0) 
+        {
+            if (token[i + 1] == NULL) 
+            {
+                printf("Error: No output file specified.\n");
+                exit(EXIT_FAILURE);
+            }
+
+            FILE *file = fopen(token[i + 1], "w");
+            if (!file) 
+            {
+                perror("fopen failed");
+                exit(EXIT_FAILURE);
+            }
+
+            dup2(fileno(file), STDOUT_FILENO); // Redirect stdout to file
+            fclose(file);
+
+            token[i] = NULL; // Remove `>` from command
+            token[i + 1] = NULL;
+            break;
+        }
     }
 
-    int   token_count = 0;                                 
-                                                           
-    // Pointer to point to the token
-    // parsed by strsep
-    char *argument_ptr = NULL;                                         
-                                                           
-    char *working_string  = strdup( command_string );                
-
-    // we are going to move the working_string pointer so
-    // keep track of its original value so we can deallocate
-    // the correct amount at the end
-    char *head_ptr = working_string;
-
-    // Tokenize the input strings with whitespace used as the delimiter
-    while ( ( (argument_ptr = strsep(&working_string, WHITESPACE ) ) != NULL) && 
-              (token_count<MAX_NUM_ARGUMENTS))
+    // Handle input redirection (`<`)
+    for (i = 0; i < token_count; i++) 
     {
-      token[token_count] = strndup( argument_ptr, MAX_COMMAND_SIZE );
-      if( strlen( token[token_count] ) == 0 )
-      {
-        token[token_count] = NULL;
-      }
-        token_count++;
+        if (token[i] != NULL && strcmp(token[i], "<") == 0) 
+        {
+            if (token[i + 1] == NULL) 
+            {
+                printf("Error: No input file specified.\n");
+                exit(EXIT_FAILURE);
+            }
+
+            FILE *file = fopen(token[i + 1], "r");
+            if (!file) 
+            {
+                perror("fopen failed");
+                exit(EXIT_FAILURE);
+            }
+
+            dup2(fileno(file), STDIN_FILENO); // Redirect stdin from file
+            fclose(file);
+
+            token[i] = NULL; // Remove `<` from command
+            token[i + 1] = NULL;
+            break;
+        }
     }
 
-    // Now print the tokenized input as a debug check
-    // \TODO Remove this for loop and replace with your shell functionality
-
-    int token_index  = 0;
-    for( token_index = 0; token_index < token_count; token_index ++ ) 
+    // Execute the command
+    if (execvp(token[0], token) == -1) 
     {
-      printf("token[%d] = %s\n", token_index, token[token_index] );  
+        printf("%s: Command not found.\n", token[0]);
+        exit(EXIT_FAILURE);
     }
-
-    // Cleanup allocated memory
-    for( int i = 0; i < MAX_NUM_ARGUMENTS; i++ )
-    {
-      if( token[i] != NULL )
-      {
-        free( token[i] );
-      }
-    }
-
-    free( head_ptr );
-
-  }
-
-  free( command_string );
-
-  return 0;
-  // e1234ca2-76f3-90d6-0703ac120004
+} 
+else // Parent process
+{
+    waitpid(pid, NULL, 0); // Parent waits for child process
 }
+}
+}
+
+// Function to store commands in history
+void push_command(char *command) 
+{
+    if (top == MAX_HISTORY - 1) 
+    {
+        free(history[0]); 
+        for (int i = 1; i <= top; i++) 
+        {
+            history[i - 1] = history[i];
+        }
+        top--;
+    }
+    history[++top] = strdup(command); 
+}
+
+// Function to print history
+void print_history() 
+{
+    for (int i = top; i >= 0; i--) 
+    {
+        printf("[%d] %s\n", i + 1, history[i]);
+    }
+}
+
+void handle_signal(int sig)
+{
+    printf("\nmsh> ");
+    fflush(stdout);
+}
+
+//finish piping
