@@ -1,4 +1,26 @@
 // The MIT License (MIT)
+// 
+// Copyright (c) 2023 Trevor Bakker 
+// 
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+// 
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+// 
+// 
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+
 
 #define _GNU_SOURCE
 
@@ -9,37 +31,53 @@
 #include <errno.h>
 #include <string.h>
 #include <signal.h>
+#include <fcntl.h> // Required for file redirection
 
-
-#define WHITESPACE " \t\n"      // Token delimiters
+#define WHITESPACE " \t\n"      // Token delimiters, allows command to be split apart into individual parts by whitespace
 #define MAX_COMMAND_SIZE 128    // Max command size
-#define MAX_HISTORY 50          // Max history size
-#define MAX_NUM_ARGUMENTS 10    // Max arguments
+#define MAX_HISTORY 50          // The max history stored (last 50 commands)
+#define MAX_NUM_ARGUMENTS 10    // Supports 10 arguments
 
-char *history[MAX_HISTORY];  // Stack for command history
-int top = -1;  // Stack pointer (-1 means empty)
+char *history[MAX_HISTORY];      // Stack for command history
+int top = -1;                  // Stack pointer (-1 means empty)
+
+
 void push_command(char *command);
 void print_history();
 void handle_signal(int sig);
+void execute_command(char *token[], int token_count);
+
+
+
+
 
 int main()
 {
+    // Block Ctrl+C and Ctrl+Z signals
     signal(SIGINT, handle_signal);
     signal(SIGTSTP, handle_signal);
 
     char *command_string = (char*) malloc(MAX_COMMAND_SIZE);
 
+
     while (1)
     {
+        // Print out the msh prompt
         printf("msh> ");
+        // Read the command from the commandline.  The
+        // maximum command that will be read is MAX_COMMAND_SIZE
+        // This while command will wait here until the user
+        // inputs something since fgets returns NULL when there
+        // is no input
         while (!fgets(command_string, MAX_COMMAND_SIZE, stdin));
 
+        // If the enter button is pressed with no input
         if (command_string[0] == '\n' || command_string[0] == '\0') 
         {
             continue; 
         }
 
-        /* Parse input */
+        // Parse input
         char *token[MAX_NUM_ARGUMENTS];
         for (int i = 0; i < MAX_NUM_ARGUMENTS; i++)
         {
@@ -47,10 +85,20 @@ int main()
         }
 
         int token_count = 0;
+
+        // Pointer to point to the token
+        // parsed by strsep
         char *argument_ptr = NULL;
+
         char *working_string = strdup(command_string);
+
+        // we are going to move the working_string pointer so
+        // keep track of its original value so we can deallocate
+        // the correct amount at the end
         char *head_ptr = working_string;
 
+
+         // Tokenize the input strings with whitespace used as the delimiter
         while (((argument_ptr = strsep(&working_string, WHITESPACE)) != NULL) && (token_count < MAX_NUM_ARGUMENTS))
         {
             token[token_count] = strndup(argument_ptr, MAX_COMMAND_SIZE);
@@ -63,199 +111,207 @@ int main()
 
         if (token[0] == NULL) continue;
 
-        // Handle `!#` history execution
-        if (token[0][0] == '!' && strlen(token[0]) > 1) 
-        {
-            int command_index = atoi(&token[0][1]) - 1;
-            if (command_index >= 0 && command_index <= top) 
-            {
-                printf("Re-running command: %s\n", history[command_index]);
-                strcpy(command_string, history[command_index]);
-
-                // Tokenize the retrieved command
-                char *history_tokens[MAX_NUM_ARGUMENTS];
-                int history_token_count = 0;
-                char *arg_ptr = NULL;
-                char *history_working = strdup(command_string);
-                char *head = history_working;
-
-                while ((arg_ptr = strsep(&history_working, WHITESPACE)) != NULL && history_token_count < MAX_NUM_ARGUMENTS)
-                {
-                    if (strlen(arg_ptr) > 0)
-                    {
-                        history_tokens[history_token_count] = strndup(arg_ptr, MAX_COMMAND_SIZE);
-                        history_token_count++;
-                    }
-                }
-                history_tokens[history_token_count] = NULL;
-
-                // Store in history again
-                push_command(command_string);
-
-                // Execute the command normally
-                if (strcmp(history_tokens[0], "exit") == 0 || strcmp(history_tokens[0], "quit") == 0) 
-                {
-                    free(head);
-                    exit(0);
-                }
-
-                if (strcmp(history_tokens[0], "cd") == 0) 
-                {
-                    if (history_tokens[1] == NULL)
-                        chdir(getenv("HOME"));
-                    else if (chdir(history_tokens[1]) != 0)
-                        perror("cd failed");
-                } 
-                else 
-                {
-                    pid_t pid = fork();
-                    if (pid == 0) 
-                    {
-                        if (execvp(history_tokens[0], history_tokens) == -1)
-                        {
-                            printf("%s: Command not found.\n", history_tokens[0]);
-                            exit(EXIT_FAILURE);
-                        }
-                    } 
-                    else if (pid > 0) 
-                    {
-                        waitpid(pid, NULL, 0);
-                    }
-                    else 
-                    {
-                        perror("fork failed");
-                    }
-                }
-
-                free(head);
-                for (int i = 0; i < history_token_count; i++) 
-                {
-                    free(history_tokens[i]);
-                }
-
-                continue;
-            } 
-            else 
-            {
-                printf("Invalid command number.\n");
-                continue;
-            }
-        }
-
-        // Store command in history
+        // Store commands in history
         push_command(command_string);
 
-        // Handle `exit` or `quit`
+        // Handle built 'exit' and 'quit' commands
         if (strcmp(token[0], "exit") == 0 || strcmp(token[0], "quit") == 0) 
         {
             exit(0);
+
         }
 
-        // Handle `history` command
+        // Handle 'history' command
         if (strcmp(token[0], "history") == 0) 
         {
+
             print_history();
             continue;
-        }
 
-        // Handle `cd` command
+        }
+        // Handle 'cd' command
         if (strcmp(token[0], "cd") == 0) 
         {
             if (token[1] == NULL) 
             {
-                chdir(getenv("HOME"));
+                
+                chdir(getenv("HOME"));  // if cd is typed alone go to home
             } 
             else 
             {
                 if (chdir(token[1]) != 0) 
                 {
+
                     perror("cd failed");
                 }
             }
-            continue;
+                continue;
         }
 
-        // Fork and execute commands
+    execute_command(token, token_count);
+            // Cleanup allocated memory
+        for (int i = 0; i < MAX_NUM_ARGUMENTS; i++)
+        {
+            if (token[i] != NULL)
+            {
+                free(token[i]);
+            }
+        }
+
+        free(head_ptr);
+    }
+
+    free(command_string);
+    return 0;
+    // e1234ca2-76f3-90d6-0703ac120004
+
+}
+
+// *************** MAIN ENDS HERE BELOW IS SUPPORT FUNCTIONS ***********************
+
+ //Executing commands for redirection and pipes
+ 
+    void execute_command(char *token[], int token_count)
+    {
+    int i, pipe_index = -1;
+
+    // Check for pipes in the command
+    for (i = 0; i < token_count; i++) 
+    {
+        // If pipe is found and where its found
+        if (token[i] != NULL && strcmp(token[i], "|") == 0) 
+        {
+            pipe_index = i;
+            break;
+        }
+    }
+
+    if (pipe_index != -1) 
+    {
+        // Pipe handling
+        token[pipe_index] = NULL; //Split command at |
+        char *first_command[MAX_NUM_ARGUMENTS];
+        char *second_command[MAX_NUM_ARGUMENTS];
+
+        // Splitting the command into two parts
+        // first_command before | to send output
+        // second_command after | to receive input
+        // after creating a pipe to connect them   
+        for (i = 0; i < pipe_index; i++) 
+        {
+            first_command[i] = token[i];
+        }
+        first_command[i] = NULL;
+
+        for (i = pipe_index + 1; i < token_count; i++) 
+        {
+            second_command[i - pipe_index - 1] = token[i];
+        }
+        second_command[i - pipe_index - 1] = NULL;
+
+        int pipe_fd[2];
+        if (pipe(pipe_fd) == -1) 
+        {
+            perror("pipe failed");
+            return;
+        }
+        // Fork two child processes one to write to the pipe and one to write from
+        pid_t pid1 = fork();
+        if (pid1 == 0) 
+        {
+            // Writing to the pipe
+            dup2(pipe_fd[1], STDOUT_FILENO); // dup2() redirects input and output files or pipes
+            close(pipe_fd[0]); 
+            close(pipe_fd[1]); 
+
+            if (execvp(first_command[0], first_command) == -1) 
+            {
+                perror("execvp failed");
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        pid_t pid2 = fork();
+        if (pid2 == 0) 
+        {
+            // Reading from the pipe
+            dup2(pipe_fd[0], STDIN_FILENO);
+            close(pipe_fd[0]); 
+            close(pipe_fd[1]); 
+
+            if (execvp(second_command[0], second_command) == -1) 
+            {
+
+                perror("execvp failed");
+                exit(EXIT_FAILURE);
+            }
+        }
+
+            close(pipe_fd[0]); 
+            close(pipe_fd[1]); 
+            waitpid(pid1, NULL, 0);
+            waitpid(pid2, NULL, 0);
+    } 
+    else 
+    {
+        // handling re directon
         pid_t pid = fork();
-        if (pid == -1) 
-{
-    perror("fork failed");
-} 
-else if (pid == 0) // Child process
-{
-    int i;
-    
-    // Handle output redirection (`>`)
-    for (i = 0; i < token_count; i++) 
-    {
-        if (token[i] != NULL && strcmp(token[i], ">") == 0) 
+
+        if (pid == 0) 
         {
-            if (token[i + 1] == NULL) 
+            // Output redirection (>)
+            for (i = 0; i < token_count; i++) 
             {
-                printf("Error: No output file specified.\n");
-                exit(EXIT_FAILURE);
+                if (token[i] != NULL && strcmp(token[i], ">") == 0) 
+                {
+                    // Token i+1 is the name of the file that is after the > or in this case the output file
+                    int fd = open(token[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644); //O_TRUNC is used if the file already contains info
+                    dup2(fd, STDOUT_FILENO);
+                    close(fd);
+                    token[i] = NULL; // Remove > from arguments
+                    break;
+                }
             }
 
-            FILE *file = fopen(token[i + 1], "w");
-            if (!file) 
+            // Input redirection (<)
+            for (i = 0; i < token_count; i++) 
             {
-                perror("fopen failed");
-                exit(EXIT_FAILURE);
+                if (token[i] != NULL && strcmp(token[i], "<") == 0) 
+                {
+                    int fd = open(token[i + 1], O_RDONLY); // i + 1 is the name of the input file
+                    if (fd == -1) 
+                    {
+
+                        perror("open failed");
+                        exit(EXIT_FAILURE);
+                    }
+                    dup2(fd, STDIN_FILENO);
+                    close(fd);
+                    token[i] = NULL;
+                    break;
+                }
             }
 
-            dup2(fileno(file), STDOUT_FILENO); // Redirect stdout to file
-            fclose(file);
-
-            token[i] = NULL; // Remove `>` from command
-            token[i + 1] = NULL;
-            break;
+            if (execvp(token[0], token) == -1) 
+            {
+                perror("execvp failed");
+                exit(EXIT_FAILURE);
+            }
+        } 
+        else 
+        {
+            // Parent process is waiting for child process to finish
+            waitpid(pid, NULL, 0);
         }
     }
+}
 
-    // Handle input redirection (`<`)
-    for (i = 0; i < token_count; i++) 
+
+
+    //Store command in history
+
+    void push_command(char *command) 
     {
-        if (token[i] != NULL && strcmp(token[i], "<") == 0) 
-        {
-            if (token[i + 1] == NULL) 
-            {
-                printf("Error: No input file specified.\n");
-                exit(EXIT_FAILURE);
-            }
-
-            FILE *file = fopen(token[i + 1], "r");
-            if (!file) 
-            {
-                perror("fopen failed");
-                exit(EXIT_FAILURE);
-            }
-
-            dup2(fileno(file), STDIN_FILENO); // Redirect stdin from file
-            fclose(file);
-
-            token[i] = NULL; // Remove `<` from command
-            token[i + 1] = NULL;
-            break;
-        }
-    }
-
-    // Execute the command
-    if (execvp(token[0], token) == -1) 
-    {
-        printf("%s: Command not found.\n", token[0]);
-        exit(EXIT_FAILURE);
-    }
-} 
-else // Parent process
-{
-    waitpid(pid, NULL, 0); // Parent waits for child process
-}
-}
-}
-
-// Function to store commands in history
-void push_command(char *command) 
-{
     if (top == MAX_HISTORY - 1) 
     {
         free(history[0]); 
@@ -266,21 +322,22 @@ void push_command(char *command)
         top--;
     }
     history[++top] = strdup(command); 
-}
+    }
 
-// Function to print history
-void print_history() 
-{
+
+        // Print command history
+ 
+    void print_history() 
+    {
     for (int i = top; i >= 0; i--) 
     {
+
         printf("[%d] %s\n", i + 1, history[i]);
     }
-}
-
-void handle_signal(int sig)
-{
+    }
+    // Take care of signal blockers
+    void handle_signal(int sig)
+     {
     printf("\nmsh> ");
     fflush(stdout);
-}
-
-//finish piping
+    }
